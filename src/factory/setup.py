@@ -118,7 +118,7 @@ class SetupEnvironment:
             manager=manager,
             user=user,
             home=home,
-            executable=Path(sys.executable).resolve(),
+            executable=Path(sys.executable).absolute(),
             working_directory=Path.cwd().resolve(),
             elevate=elevate,
             path=f"{home}/.local/bin:{os.environ.get('PATH', '')}",

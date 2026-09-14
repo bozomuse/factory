@@ -40,6 +40,7 @@ class ClientConfig:
     port: int
     certificate: Path
     server_name: str
+    timeout: float
 
     @classmethod
     def create(
@@ -49,13 +50,16 @@ class ClientConfig:
         certificate: Path,
         port: int = 8443,
         server_name: str | None = None,
+        timeout: float = 10.0,
     ) -> ClientConfig:
         """Validate and create client connection settings."""
         if not host:
             raise InvalidClientConfigError("host must not be empty")
         if not 1 <= port <= 65_535:
             raise InvalidClientConfigError("port must be between 1 and 65535")
-        return cls(host, port, certificate, server_name or host)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise InvalidClientConfigError("timeout must be a positive finite number")
+        return cls(host, port, certificate, server_name or host, timeout)
 
 
 class FactoryClient:
@@ -73,7 +77,8 @@ class FactoryClient:
         try:
             with (
                 socket.create_connection(
-                    (self._config.host, self._config.port)
+                    (self._config.host, self._config.port),
+                    timeout=self._config.timeout,
                 ) as connection,
                 context.wrap_socket(
                     connection,
@@ -99,7 +104,8 @@ class FactoryClient:
         try:
             with (
                 socket.create_connection(
-                    (self._config.host, self._config.port)
+                    (self._config.host, self._config.port),
+                    timeout=self._config.timeout,
                 ) as connection,
                 context.wrap_socket(
                     connection,

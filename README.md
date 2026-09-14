@@ -1,8 +1,6 @@
 # Factory
 
-Factory is a small, remotely controlled runtime for coding agents. Every channel is
-an actual tmux window, so the server always reflects changes made by Factory, an
-agent, another process, or a developer using tmux directly.
+Factory is a small programmable, remotely controlled runtime for coding agents.
 
 ## Setup
 

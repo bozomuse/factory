@@ -164,7 +164,16 @@ class TmuxRuntime:
         if isinstance(loaded, CommandFailure):
             return OperationFailure(loaded.message)
         pasted = self._runner.run(
-            ("tmux", "paste-buffer", "-d", "-b", buffer_name, "-t", target)
+            (
+                "tmux",
+                "paste-buffer",
+                "-p",
+                "-d",
+                "-b",
+                buffer_name,
+                "-t",
+                target,
+            )
         )
         if isinstance(pasted, CommandFailure):
             self._runner.run(("tmux", "delete-buffer", "-b", buffer_name))

@@ -111,6 +111,7 @@ def test_send_message_uses_tmux_paste_buffer() -> None:
     assert runner.calls[1][0][:2] == ("tmux", "load-buffer")
     assert runner.calls[1][1] == "fix $(nothing)"
     assert runner.calls[2][0][1] == "paste-buffer"
+    assert "-p" in runner.calls[2][0]
     assert runner.calls[3][0][-1] == "Enter"
 
 

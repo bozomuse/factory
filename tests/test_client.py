@@ -60,7 +60,12 @@ def _install_connection(
     def create_context(**kwargs: object) -> Context:
         return Context()
 
-    def create_connection(address: tuple[str, int]) -> socket.socket:
+    def create_connection(
+        address: tuple[str, int],
+        *,
+        timeout: float,
+    ) -> socket.socket:
+        assert timeout == 10.0
         return cast(socket.socket, FakeConnection())
 
     monkeypatch.setattr(ssl, "create_default_context", create_context)
@@ -88,6 +93,12 @@ def test_client_config_validates_address() -> None:
             host="localhost",
             port=0,
             certificate=Path("certificate.pem"),
+        )
+    with pytest.raises(InvalidClientConfigError):
+        ClientConfig.create(
+            host="localhost",
+            certificate=Path("certificate.pem"),
+            timeout=0,
         )
 
 

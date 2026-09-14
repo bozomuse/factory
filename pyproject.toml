@@ -1,0 +1,47 @@
+[project]
+name = "factory"
+version = "0.1.0"
+description = "Factory is a programmable software development runtime system for agents"
+readme = "README.md"
+authors = [
+    { name = "Paolo Anzani", email = "paoloanzn@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=50.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.31.4",
+    "mypy>=1.18.2",
+    "pytest>=8.4.2",
+    "ruff>=0.13.1",
+]
+
+[project.scripts]
+factory = "factory:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+files = ["src", "scripts"]
+
+[tool.basedpyright]
+include = ["src", "scripts", "tests"]
+typeCheckingMode = "strict"
+
+[tool.ruff]
+extend-exclude = ["AGENTS.md"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

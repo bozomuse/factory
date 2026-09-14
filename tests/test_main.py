@@ -41,7 +41,7 @@ def test_state_command_uses_remote_client(
     )
 
     assert main_module._run(args) == 0
-    assert calls == [("factory.state", None)]
+    assert calls == [("work.run", {"unit": "factory.state", "input": {}})]
     assert '"channel_count": 0' in capsys.readouterr().out
 
 
@@ -71,7 +71,15 @@ def test_send_command_maps_to_mailbox_method(
     )
 
     assert main_module._run(args) == 0
-    assert calls == [("mailbox.send", {"channel": "@1", "message": "fix the tests"})]
+    assert calls == [
+        (
+            "work.run",
+            {
+                "unit": "mailbox.send",
+                "input": {"channel": "@1", "message": "fix the tests"},
+            },
+        )
+    ]
 
 
 def test_main_handles_keyboard_interrupt_without_traceback(

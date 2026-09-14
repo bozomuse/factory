@@ -1,13 +1,18 @@
-"""Factory operations exposed through JSON-RPC."""
+"""Factory's single programmable execution abstraction."""
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from importlib.metadata import entry_points
+from typing import Protocol, runtime_checkable
 
 from factory.jsonrpc import (
     JsonObject,
     JsonParams,
     JsonRpcContext,
+    JsonRpcMethod,
     JsonRpcProtocol,
     JsonValue,
     MethodFailure,
@@ -26,22 +31,117 @@ from factory.tmux import (
 _INVALID_PARAMS = MethodFailure(-32602, "Invalid params")
 
 
-class FactoryServiceError(Exception):
-    """Base class for Factory service configuration errors."""
+class WorkError(Exception):
+    """Base class for work-system configuration errors."""
 
 
-class InvalidMonitorIntervalError(FactoryServiceError):
+class InvalidMonitorIntervalError(WorkError):
     """Raised when state monitoring is configured with an invalid interval."""
 
 
-class FactoryService:
-    """Coordinate tmux state, mailbox operations, and durable notifications."""
+class InvalidWorkUnitError(WorkError):
+    """Raised when a work unit has an invalid or reserved name."""
+
+
+class DuplicateWorkUnitError(WorkError):
+    """Raised when a work unit name is registered more than once."""
+
+
+WorkSuccess = MethodSuccess
+WorkFailure = MethodFailure
+type WorkResult = MethodResult
+
+
+@runtime_checkable
+class WorkUnit(Protocol):
+    """One named, composable Factory operation."""
+
+    @property
+    def name(self) -> str:
+        """Return the globally unique work-unit name."""
+        ...
+
+    def run(self, input: JsonObject, context: WorkContext) -> WorkResult:
+        """Execute with JSON input and Factory's controlled context."""
+        ...
+
+
+type WorkExecutor = Callable[[str, JsonObject, WorkContext], WorkResult]
+
+
+class WorkRegistry:
+    """Own the validated set of available work units."""
+
+    def __init__(self) -> None:
+        self._units: dict[str, WorkUnit] = {}
+
+    def register(self, unit: WorkUnit) -> None:
+        """Register a uniquely named work unit."""
+        if not unit.name or unit.name.startswith("work."):
+            raise InvalidWorkUnitError(unit.name)
+        if unit.name in self._units:
+            raise DuplicateWorkUnitError(unit.name)
+        self._units[unit.name] = unit
+
+    def names(self) -> tuple[str, ...]:
+        """Return registered names in deterministic order."""
+        return tuple(sorted(self._units))
+
+    def get(self, name: str) -> WorkUnit | None:
+        """Return a registered unit by name."""
+        return self._units.get(name)
+
+
+class WorkContext:
+    """The controlled Factory surface available to work units."""
+
+    def __init__(
+        self,
+        executor: WorkExecutor,
+        connection: JsonRpcContext,
+    ) -> None:
+        self._executor = executor
+        self._connection = connection
+
+    def run(self, unit: str, input: JsonObject) -> WorkResult:
+        """Compose another work unit through the same execution path."""
+        return self._executor(unit, input, self)
+
+
+@dataclass(frozen=True, slots=True)
+class _FunctionWorkUnit:
+    name: str
+    function: JsonRpcMethod
+
+    def run(self, input: JsonObject, context: WorkContext) -> WorkResult:
+        return self.function(
+            input or None,
+            context._connection,  # pyright: ignore[reportPrivateUsage]
+        )
+
+
+def load_work_units() -> tuple[WorkUnit, ...]:
+    """Load user-defined units from the ``factory.plugins`` entry-point group."""
+    units: list[WorkUnit] = []
+    for entry_point in entry_points(group="factory.plugins"):
+        candidate: object = entry_point.load()
+        if isinstance(candidate, type):
+            candidate = candidate()
+        if not isinstance(candidate, WorkUnit):
+            raise InvalidWorkUnitError(entry_point.name)
+        units.append(candidate)
+    return tuple(units)
+
+
+class WorkRunner:
+    """Run all built-in and user-defined Factory behavior."""
 
     def __init__(
         self,
         runtime: TmuxRuntime,
         notifications: NotificationLog,
         monitor_interval: float,
+        registry: WorkRegistry,
     ) -> None:
         self._runtime = runtime
         self._notifications = notifications
@@ -50,8 +150,10 @@ class FactoryService:
         self._last_error: str | None = None
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
+        self._registry = registry
         self._protocol = JsonRpcProtocol()
-        self._register_methods()
+        self._protocol.register("work.run", self._run)
+        self._protocol.register("work.list", self._list)
 
     @classmethod
     def create(
@@ -59,16 +161,22 @@ class FactoryService:
         runtime: TmuxRuntime,
         notifications: NotificationLog,
         *,
+        units: Iterable[WorkUnit] = (),
         monitor_interval: float = 1.0,
-    ) -> FactoryService:
-        """Create a service with a positive state-monitor interval."""
+    ) -> WorkRunner:
+        """Create a runner with built-in and user-defined work units."""
         if monitor_interval <= 0:
             raise InvalidMonitorIntervalError("monitor_interval must be positive")
-        return cls(runtime, notifications, monitor_interval)
+        registry = WorkRegistry()
+        runner = cls(runtime, notifications, monitor_interval, registry)
+        runner._register_builtins()
+        for unit in units:
+            registry.register(unit)
+        return runner
 
     @property
     def protocol(self) -> JsonRpcProtocol:
-        """Return the JSON-RPC protocol configured with Factory methods."""
+        """Return the generic work JSON-RPC adapter."""
         return self._protocol
 
     def start(self) -> OperationResult[None]:
@@ -102,13 +210,50 @@ class FactoryService:
         self._monitor = None
         self._notifications.publish("factory.stopped")
 
-    def _register_methods(self) -> None:
-        self._protocol.register("factory.state", self._state)
-        self._protocol.register("channel.create", self._create_channel)
-        self._protocol.register("mailbox.send", self._send_message)
-        self._protocol.register("mailbox.read", self._read_channel)
-        self._protocol.register("notification.list", self._list_notifications)
-        self._protocol.register("notification.subscribe", self._subscribe)
+    def _register_builtins(self) -> None:
+        for name, function in (
+            ("factory.state", self._state),
+            ("channel.create", self._create_channel),
+            ("mailbox.send", self._send_message),
+            ("mailbox.read", self._read_channel),
+            ("notification.list", self._list_notifications),
+            ("notification.subscribe", self._subscribe),
+        ):
+            self._registry.register(_FunctionWorkUnit(name, function))
+
+    def _run(
+        self,
+        params: JsonParams | None,
+        context: JsonRpcContext,
+    ) -> MethodResult:
+        if not isinstance(params, dict) or set(params) != {"unit", "input"}:
+            return _INVALID_PARAMS
+        unit = params["unit"]
+        input = params["input"]
+        if not isinstance(unit, str) or not isinstance(input, dict):
+            return _INVALID_PARAMS
+        work_context = WorkContext(self._execute, context)
+        return self._execute(unit, input, work_context)
+
+    def _execute(
+        self,
+        unit: str,
+        input: JsonObject,
+        context: WorkContext,
+    ) -> WorkResult:
+        work = self._registry.get(unit)
+        if work is None:
+            return WorkFailure(-32601, "Work unit not found", {"unit": unit})
+        return work.run(input, context)
+
+    def _list(
+        self,
+        params: JsonParams | None,
+        context: JsonRpcContext,
+    ) -> MethodResult:
+        if params is not None:
+            return _INVALID_PARAMS
+        return MethodSuccess(list(self._registry.names()))
 
     def _state(
         self,

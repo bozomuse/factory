@@ -1,4 +1,4 @@
-"""Behavior tests for Factory's JSON-RPC operations."""
+"""Behavior tests for Factory's work-unit system."""
 
 from __future__ import annotations
 
@@ -8,15 +8,24 @@ from typing import cast
 
 import pytest
 
+import factory.work as work_module
 from factory.jsonrpc import JsonObject
 from factory.notifications import Notification
-from factory.service import FactoryService, InvalidMonitorIntervalError
 from factory.tmux import (
     ChannelState,
     FactoryState,
     OperationResult,
     OperationSuccess,
     ProcessState,
+)
+from factory.work import (
+    DuplicateWorkUnitError,
+    InvalidMonitorIntervalError,
+    WorkContext,
+    WorkResult,
+    WorkRunner,
+    WorkUnit,
+    load_work_units,
 )
 
 
@@ -85,36 +94,42 @@ class FakeNotifications:
         self.subscribers.pop(subscriber_id, None)
 
 
-def _service() -> tuple[FactoryService, FakeRuntime, FakeNotifications]:
+def _runner(*units: WorkUnit) -> tuple[WorkRunner, FakeRuntime, FakeNotifications]:
     runtime = FakeRuntime()
     notifications = FakeNotifications()
-    service = FactoryService.create(runtime, notifications, monitor_interval=60)  # type: ignore[arg-type]
-    return service, runtime, notifications
+    runner = WorkRunner.create(
+        runtime,  # pyright: ignore[reportArgumentType]
+        notifications,  # pyright: ignore[reportArgumentType]
+        units=units,
+        monitor_interval=60,
+    )
+    return runner, runtime, notifications
 
 
-def _call(
-    service: FactoryService, method: str, params: JsonObject | None = None
-) -> object:
-    request: JsonObject = {"jsonrpc": "2.0", "method": method, "id": 1}
-    if params is not None:
-        request["params"] = params
-    response = service.protocol.handle(json.dumps(request).encode())
+def _call(runner: WorkRunner, unit: str, input: JsonObject | None = None) -> object:
+    request: JsonObject = {
+        "jsonrpc": "2.0",
+        "method": "work.run",
+        "params": {"unit": unit, "input": input or {}},
+        "id": 1,
+    }
+    response = runner.protocol.handle(json.dumps(request).encode())
     assert response is not None
     return json.loads(response)["result"]
 
 
 def test_create_rejects_invalid_monitor_interval() -> None:
-    _, runtime, notifications = _service()
+    _, runtime, notifications = _runner()
 
     with pytest.raises(InvalidMonitorIntervalError):
-        FactoryService.create(runtime, notifications, monitor_interval=0)  # type: ignore[arg-type]
+        WorkRunner.create(runtime, notifications, monitor_interval=0)  # type: ignore[arg-type]
 
 
 def test_start_recovers_session_and_publishes_state() -> None:
-    service, _, notifications = _service()
+    runner, _, notifications = _runner()
 
-    result = service.start()
-    service.close()
+    result = runner.start()
+    runner.close()
 
     assert result == OperationSuccess(None)
     assert notifications.events[0].event == "factory.started"
@@ -123,9 +138,9 @@ def test_start_recovers_session_and_publishes_state() -> None:
 
 
 def test_factory_state_is_read_live() -> None:
-    service, _, _ = _service()
+    runner, _, _ = _runner()
 
-    result = _call(service, "factory.state")
+    result = _call(runner, "factory.state")
 
     assert isinstance(result, dict)
     assert result["channel_count"] == 1
@@ -134,9 +149,9 @@ def test_factory_state_is_read_live() -> None:
 
 
 def test_channel_create_maps_to_tmux_and_publishes() -> None:
-    service, runtime, notifications = _service()
+    runner, runtime, notifications = _runner()
 
-    result = _call(service, "channel.create", {"name": "reviewer"})
+    result = _call(runner, "channel.create", {"name": "reviewer"})
 
     assert result == {"channel": "@2", "name": "reviewer"}
     assert runtime.created == ["reviewer"]
@@ -144,14 +159,14 @@ def test_channel_create_maps_to_tmux_and_publishes() -> None:
 
 
 def test_mailbox_send_and_read_map_to_tmux() -> None:
-    service, runtime, _ = _service()
+    runner, runtime, _ = _runner()
 
     sent = _call(
-        service,
+        runner,
         "mailbox.send",
         {"channel": "@1", "message": "fix it"},
     )
-    read = _call(service, "mailbox.read", {"channel": "@1", "lines": 50})
+    read = _call(runner, "mailbox.read", {"channel": "@1", "lines": 50})
 
     assert sent == {"channel": "@1"}
     assert read == {"channel": "@1", "content": "pane output\n"}
@@ -160,14 +175,14 @@ def test_mailbox_send_and_read_map_to_tmux() -> None:
 
 
 def test_notification_history_and_live_subscription() -> None:
-    service, _, notifications = _service()
+    runner, _, notifications = _runner()
     notifications.publish("existing")
     sent: list[bytes] = []
-    session = service.protocol.open(sent.append)
+    session = runner.protocol.open(sent.append)
 
     response = session.handle(
-        b'{"jsonrpc":"2.0","method":"notification.subscribe",'
-        b'"params":{"after":0},"id":1}'
+        b'{"jsonrpc":"2.0","method":"work.run","params":'
+        b'{"unit":"notification.subscribe","input":{"after":0}},"id":1}'
     )
     notifications.publish("live", {"value": 2})
     session.close()
@@ -180,13 +195,57 @@ def test_notification_history_and_live_subscription() -> None:
 
 
 def test_notification_list_resumes_after_sequence() -> None:
-    service, _, notifications = _service()
+    runner, _, notifications = _runner()
     notifications.publish("one")
     notifications.publish("two")
 
     result = cast(
         list[JsonObject],
-        _call(service, "notification.list", {"after": 1}),
+        _call(runner, "notification.list", {"after": 1}),
     )
 
     assert [event["event"] for event in result] == ["two"]
+
+
+def test_plugin_composes_builtins_through_context() -> None:
+    class CreateReviewer:
+        name = "review.create"
+
+        def run(self, input: JsonObject, context: WorkContext) -> WorkResult:
+            return context.run("channel.create", input)
+
+    runner, runtime, _ = _runner(CreateReviewer())
+
+    result = _call(runner, "review.create", {"name": "reviewer"})
+    response = runner.protocol.handle(b'{"jsonrpc":"2.0","method":"work.list","id":1}')
+
+    assert result == {"channel": "@2", "name": "reviewer"}
+    assert runtime.created == ["reviewer"]
+    assert response is not None
+    assert "review.create" in json.loads(response)["result"]
+    with pytest.raises(DuplicateWorkUnitError):
+        _runner(CreateReviewer(), CreateReviewer())
+
+
+def test_load_work_units_discovers_entry_point_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Plugin:
+        name = "plugin.example"
+
+        def run(self, input: JsonObject, context: WorkContext) -> WorkResult:
+            return context.run("factory.state", {})
+
+    class EntryPoint:
+        name = "example"
+
+        def load(self) -> object:
+            return Plugin
+
+    def discover(*, group: str) -> tuple[EntryPoint, ...]:
+        assert group == "factory.plugins"
+        return (EntryPoint(),)
+
+    monkeypatch.setattr(work_module, "entry_points", discover)
+
+    assert [unit.name for unit in load_work_units()] == ["plugin.example"]

@@ -54,16 +54,16 @@ Remote commands accept `--host`, `--port`, `--certificate`, and `--server-name`.
 
 The TLS socket uses newline-delimited, compact JSON-RPC 2.0. It supports requests,
 notifications, batches, concurrent clients, and unilateral server notifications.
-The public methods are:
+Factory exposes two JSON-RPC methods. Every operation, including built-ins and
+plugins, is a work unit executed through the same path:
 
 | Method | Access | Parameters |
 | --- | --- | --- |
-| `factory.state` | Read | none |
-| `channel.create` | Write | `{"name": string}` |
-| `mailbox.send` | Write | `{"channel": string, "message": string}` |
-| `mailbox.read` | Read | `{"channel": string, "lines"?: integer}` |
-| `notification.list` | Read | `{"after"?: integer}` |
-| `notification.subscribe` | Read stream | `{"after"?: integer}` |
+| `work.run` | Execute | `{"unit": string, "input": object}` |
+| `work.list` | Discover | none |
+
+Built-in units are `factory.state`, `channel.create`, `mailbox.send`,
+`mailbox.read`, `notification.list`, and `notification.subscribe`.
 
 Subscriptions first return durable event history, then emit JSON-RPC notifications
 with method `factory.notification`. Events are appended and flushed before live
@@ -74,5 +74,10 @@ The generic test client can call any method directly:
 
 ```console
 uv run python scripts/tcp_client.py localhost .keys/cert.pem \
-  --method mailbox.read --params '{"channel":"@1","lines":50}'
+  --method work.run \
+  --params '{"unit":"mailbox.read","input":{"channel":"@1","lines":50}}'
 ```
+
+The `factory.plugins` entry-point group loads `WorkUnit` classes or instances. Each has a
+unique `name` and `run(input, context) -> WorkResult`; `WorkContext.run(...)` is
+the controlled Factory capability used to compose other units.

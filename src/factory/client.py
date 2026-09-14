@@ -99,7 +99,11 @@ class FactoryClient:
         if after < 0:
             raise InvalidClientConfigError("after must not be negative")
         request_id = self._take_id()
-        request = _request("notification.subscribe", {"after": after}, request_id)
+        request = _request(
+            "work.run",
+            {"unit": "notification.subscribe", "input": {"after": after}},
+            request_id,
+        )
         context = ssl.create_default_context(cafile=str(self._config.certificate))
         try:
             with (

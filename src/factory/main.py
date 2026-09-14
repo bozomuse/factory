@@ -13,9 +13,8 @@ from types import FrameType
 
 from factory.client import ClientConfig, FactoryClient, FactoryClientError
 from factory.command import SubprocessRunner
-from factory.jsonrpc import JsonValue
+from factory.jsonrpc import JsonObject, JsonValue
 from factory.notifications import NotificationLog
-from factory.service import FactoryService
 from factory.setup import (
     FactorySetup,
     SetupConfig,
@@ -24,6 +23,7 @@ from factory.setup import (
 )
 from factory.tcp_server import SslTcpServer, TcpServerError, create_server_context
 from factory.tmux import OperationFailure, TmuxRuntime
+from factory.work import WorkError, WorkRunner, load_work_units
 
 
 def main() -> None:
@@ -33,7 +33,7 @@ def main() -> None:
         exit_code = _run(args)
     except KeyboardInterrupt:
         exit_code = 130
-    except (FactoryClientError, TcpServerError, OSError) as error:
+    except (FactoryClientError, TcpServerError, WorkError, OSError) as error:
         print(f"factory: {error}", file=sys.stderr)
         exit_code = 1
     if exit_code:
@@ -48,18 +48,20 @@ def _run(args: argparse.Namespace) -> int:
 
     client = FactoryClient(_client_config(args))
     if args.command == "state":
-        _print_json(client.call("factory.state"))
+        _print_json(_run_work(client, "factory.state", {}))
     elif args.command == "create":
-        _print_json(client.call("channel.create", {"name": args.name}))
+        _print_json(_run_work(client, "channel.create", {"name": args.name}))
     elif args.command == "send":
         _print_json(
-            client.call(
+            _run_work(
+                client,
                 "mailbox.send",
                 {"channel": args.channel, "message": args.message},
             )
         )
     elif args.command == "read":
-        result = client.call(
+        result = _run_work(
+            client,
             "mailbox.read",
             {"channel": args.channel, "lines": args.lines},
         )
@@ -72,7 +74,7 @@ def _run(args: argparse.Namespace) -> int:
             for event in client.notifications(args.after):
                 _print_json(event, compact=True)
         else:
-            _print_json(client.call("notification.list", {"after": args.after}))
+            _print_json(_run_work(client, "notification.list", {"after": args.after}))
     return 0
 
 
@@ -101,14 +103,14 @@ def _start(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     runtime = TmuxRuntime.create(SubprocessRunner(timeout=10), args.session)
     notifications = NotificationLog.open(args.notifications)
-    service = FactoryService.create(runtime, notifications)
+    runner = WorkRunner.create(runtime, notifications, units=load_work_units())
     server = SslTcpServer.create(
         context=create_server_context(args.certificate, args.private_key),
-        protocol=service.protocol,
+        protocol=runner.protocol,
         host=args.host,
         port=args.port,
     )
-    started = service.start()
+    started = runner.start()
     if isinstance(started, OperationFailure):
         print(f"factory start: {started.message}", file=sys.stderr)
         return 1
@@ -123,7 +125,7 @@ def _start(args: argparse.Namespace) -> int:
         server.close()
     finally:
         signal.signal(signal.SIGTERM, previous)
-        service.close()
+        runner.close()
         server.close()
     return 0
 
@@ -135,6 +137,10 @@ def _client_config(args: argparse.Namespace) -> ClientConfig:
         certificate=args.certificate,
         server_name=args.server_name,
     )
+
+
+def _run_work(client: FactoryClient, unit: str, input: JsonObject) -> JsonValue:
+    return client.call("work.run", {"unit": unit, "input": input})
 
 
 def _print_json(value: JsonValue, *, compact: bool = False) -> None:

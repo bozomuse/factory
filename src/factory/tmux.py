@@ -107,6 +107,17 @@ class TmuxRuntime:
             raise InvalidSessionError("session must be a non-empty tmux session name")
         return cls(runner, session)
 
+    def command(
+        self,
+        *arguments: str,
+        input_text: str | None = None,
+    ) -> OperationResult[str]:
+        """Run any tmux command and return its standard output."""
+        result = self._runner.run(("tmux", *arguments), input_text=input_text)
+        if isinstance(result, CommandFailure):
+            return OperationFailure(result.message)
+        return OperationSuccess(result.stdout)
+
     def ensure_session(self) -> OperationResult[None]:
         """Create the tmux session when it does not already exist."""
         exists = self._runner.run(("tmux", "has-session", "-t", self._session))

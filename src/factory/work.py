@@ -99,9 +99,16 @@ class WorkContext:
         self,
         executor: WorkExecutor,
         connection: JsonRpcContext,
+        tmux: TmuxRuntime,
     ) -> None:
         self._executor = executor
         self._connection = connection
+        self._tmux = tmux
+
+    @property
+    def tmux(self) -> TmuxRuntime:
+        """Return unrestricted access to Factory's tmux runtime."""
+        return self._tmux
 
     def run(self, unit: str, input: JsonObject) -> WorkResult:
         """Compose another work unit through the same execution path."""
@@ -232,7 +239,7 @@ class WorkRunner:
         input = params["input"]
         if not isinstance(unit, str) or not isinstance(input, dict):
             return _INVALID_PARAMS
-        work_context = WorkContext(self._execute, context)
+        work_context = WorkContext(self._execute, context, self._runtime)
         return self._execute(unit, input, work_context)
 
     def _execute(

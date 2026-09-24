@@ -47,6 +47,16 @@ def test_command_exposes_raw_tmux_surface() -> None:
     assert runner.calls == [(("tmux", "display-message", "-p", "#{version}"), None)]
 
 
+def test_command_maps_runner_failure_to_operation_failure() -> None:
+    runner = FakeRunner()
+    runner.results = [CommandFailure("no server running on /tmp/tmux-1000/default")]
+
+    result = TmuxRuntime.create(runner).command("display-message", "-p", "#{version}")
+
+    assert result == OperationFailure("no server running on /tmp/tmux-1000/default")
+    assert runner.calls == [(("tmux", "display-message", "-p", "#{version}"), None)]
+
+
 def test_ensure_session_preserves_existing_session() -> None:
     runner = FakeRunner()
     runner.results = [CommandSuccess("")]

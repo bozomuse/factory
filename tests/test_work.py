@@ -14,6 +14,7 @@ from factory.notifications import Notification
 from factory.tmux import (
     ChannelState,
     FactoryState,
+    OperationFailure,
     OperationResult,
     OperationSuccess,
     ProcessState,
@@ -22,8 +23,10 @@ from factory.work import (
     DuplicateWorkUnitError,
     InvalidMonitorIntervalError,
     WorkContext,
+    WorkFailure,
     WorkResult,
     WorkRunner,
+    WorkSuccess,
     WorkUnit,
     load_work_units,
 )
@@ -40,6 +43,11 @@ class FakeRuntime:
         self.created: list[str] = []
         self.sent: list[tuple[str, str]] = []
         self.read: list[tuple[str, int]] = []
+        self.commands: list[tuple[str, ...]] = []
+
+    def command(self, *arguments: str) -> OperationResult[str]:
+        self.commands.append(arguments)
+        return OperationSuccess("3.6\n")
 
     def ensure_session(self) -> OperationResult[None]:
         return OperationSuccess(None)
@@ -225,6 +233,24 @@ def test_plugin_composes_builtins_through_context() -> None:
     assert "review.create" in json.loads(response)["result"]
     with pytest.raises(DuplicateWorkUnitError):
         _runner(CreateReviewer(), CreateReviewer())
+
+
+def test_plugin_reaches_raw_tmux_through_context() -> None:
+    class TmuxProbe:
+        name = "tmux.probe"
+
+        def run(self, input: JsonObject, context: WorkContext) -> WorkResult:
+            result = context.tmux.command("display-message", "-p", "#{version}")
+            if isinstance(result, OperationFailure):
+                return WorkFailure(-32000, result.message)
+            return WorkSuccess(result.value)
+
+    runner, runtime, _ = _runner(TmuxProbe())
+
+    result = _call(runner, "tmux.probe")
+
+    assert result == "3.6\n"
+    assert runtime.commands == [("display-message", "-p", "#{version}")]
 
 
 def test_load_work_units_discovers_entry_point_objects(

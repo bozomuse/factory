@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+      - name: Run tests
+        run: uv run --frozen --group dev pytest
+      - name: Type check (mypy --strict)
+        run: uv run --frozen --group dev mypy --strict
+      - name: Lint (ruff)
+        run: |
+          uv run --frozen --group dev ruff check .
+          uv run --frozen --group dev ruff format --check .
